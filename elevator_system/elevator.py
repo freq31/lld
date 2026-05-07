@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Optional
 
 from elevator_system.floors import Floor, Floors
-from elevator_system.request import Direction, Request
+from elevator_system.request import Direction, Request, RequestType
 
 
 class ElevatorState(str, Enum):
@@ -27,11 +27,12 @@ class Elevator:
         elevator_num: int,
         floors: Floors,
         *,
+        is_vip_express: bool = False,
         start_floor: int = 0,
     ):
         self.num = elevator_num
         self.floors = floors
-
+        self.is_vip_express = is_vip_express
         start = self.floors.get_floor(start_floor)
         if start is None:
             raise ValueError(f"Invalid start floor: {start_floor}")
@@ -48,23 +49,31 @@ class Elevator:
     def _is_valid_floor_num(self, floor_num: int) -> bool:
         return 0 <= floor_num < self.floors.number_of_floors
 
+    def remove_request(self, request: Request) -> None:
+        self._pending_up.discard(request.floor_num)
+        self._pending_down.discard(request.floor_num)
+
     def handle_request(self, request: Request) -> None:
         if not self._is_valid_floor_num(request.floor_num):
             return
         if request.floor_num == self.current_floor.floor_num:
             return
 
-        # If direction is unknown (IDLE), infer based on current position.
-        direction = request.direction
-        if direction == Direction.IDLE:
+        direction = None
+
+        if request.request_type in [RequestType.PICKUP, RequestType.DROPOFF] :
             direction = Direction.UP if request.floor_num > self.current_floor.floor_num else Direction.DOWN
+
+        elif request.request_type == RequestType.PICKDOWN:
+            direction = Direction.DOWN if request.floor_num < self.current_floor.floor_num else Direction.UP
+        else:
+            return
 
         if direction == Direction.UP:
             self._pending_up.add(request.floor_num)
         elif direction == Direction.DOWN:
             self._pending_down.add(request.floor_num)
 
-        # Note: state/dir will be chosen by the next `next()` tick.
 
     def _has_pending(self) -> bool:
         return bool(self._pending_up or self._pending_down)
@@ -128,21 +137,18 @@ class Elevator:
                 return None
             self.current_dir = next_dir
             self.state = ElevatorState.MOVING
-
-        # MOVING: advance one floor in the current direction.
-        cur = self.current_floor.floor_num
-        step = 1 if self.current_dir == Direction.UP else -1
-        next_floor_num = cur + step
-
-        if not self._is_valid_floor_num(next_floor_num):
-            # Hit a boundary; reverse if there are pending stops, otherwise go idle.
+        elif self.state == ElevatorState.MOVING:
             next_dir = self._pick_next_direction_while_moving()
             if next_dir is None:
                 self.state = ElevatorState.IDLE
                 self.current_dir = Direction.IDLE
                 return None
             self.current_dir = next_dir
-            return None
+        
+        # MOVING: advance one floor in the current direction.
+        cur = self.current_floor.floor_num
+        step = 1 if self.current_dir == Direction.UP else -1
+        next_floor_num = cur + step
 
         next_floor = self.floors.get_floor(next_floor_num)
         if next_floor is None:
@@ -151,27 +157,7 @@ class Elevator:
 
         if self._has_stop_at_current_floor():
             self._serve_current_floor()
-            # Recompute direction after serving this stop.
-            next_dir = self._pick_next_direction_while_moving()
-            if next_dir is None:
-                next_dir = self._pick_next_direction_from_idle()
-            if next_dir is None:
-                self.state = ElevatorState.IDLE
-                self.current_dir = Direction.IDLE
-            else:
-                self.current_dir = next_dir
             return self.current_floor.floor_num
-
-        # No stop here; keep or recompute direction.
-        next_dir = self._pick_next_direction_while_moving()
-        if next_dir is None:
-            if self._has_pending():
-                self.current_dir = self._pick_next_direction_from_idle() or self.current_dir
-            else:
-                self.state = ElevatorState.IDLE
-                self.current_dir = Direction.IDLE
-        else:
-            self.current_dir = next_dir
 
         return None
 
